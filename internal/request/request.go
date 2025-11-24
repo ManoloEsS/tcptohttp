@@ -10,6 +10,7 @@ import (
 
 type Request struct {
 	RequestLine RequestLine
+	State       int
 }
 
 type RequestLine struct {
@@ -18,40 +19,60 @@ type RequestLine struct {
 	Method        string
 }
 
-const crlf = "\r\n"
+const (
+	crlf       = "\r\n"
+	bufferSize = 8
+)
 
 func RequestFromReader(reader io.Reader) (*Request, error) {
 	//read bytes from reader
-	rawBytes, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, err
-	}
+	buff := make([]byte, bufferSize, bufferSize)
+	readToIndex := 0
 
-	//parse RequestLine fields from read bytes into string
-	requestLine, err := parseRequestLine(rawBytes)
-	if err != nil {
-		return nil, err
-	}
+	newRequest := Request{State: 1}
 
-	//create new Request struct from parsed fields
-	newRequest := Request{
-		RequestLine: *requestLine,
+	for newRequest.State != 0 {
+
+		if len(buff) <= readToIndex {
+			newBuff := make([]byte, len(buff), cap(buff)*2)
+			copy(newBuff, buff)
+			buff = newBuff
+		}
+
+		read, err := reader.Read(buff[readToIndex:])
+		if err == io.EOF {
+			newRequest.State = 0
+			break
+		}
+		readToIndex += read
+
+		parsed, err := newRequest.parse(buff)
+		if err != nil {
+			return nil, err
+		}
+
+		newBuff := make([]byte, len(buff), cap(buff))
+		copy(newBuff, buff)
+		buff = newBuff
+
+		readToIndex -= parsed
+
 	}
 
 	return &newRequest, nil
 }
 
-func parseRequestLine(data []byte) (*RequestLine, error) {
+func parseRequestLine(data []byte) (*RequestLine, int, error) {
 	idx := bytes.Index(data, []byte(crlf))
 
 	if idx == -1 {
-		return nil, fmt.Errorf("could not find CRLF in request line")
+		return nil, 0, nil
 	}
 
 	requestLineText := string(data[:idx])
 	requestLine, err := requestLineFromString(requestLineText)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	return requestLine, nil
@@ -89,4 +110,10 @@ func requestLineFromString(str string) (*RequestLine, error) {
 	}
 
 	return &requestLine, nil
+}
+
+func (r *Request) parse(data []byte) (int, error) {
+	if r.State == 1 {
+		parseRequestLine(data)
+	}
 }
