@@ -2,6 +2,7 @@ package request
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -10,7 +11,7 @@ import (
 
 type Request struct {
 	RequestLine RequestLine
-	State       int
+	state       requestState
 }
 
 type RequestLine struct {
@@ -19,46 +20,66 @@ type RequestLine struct {
 	Method        string
 }
 
+// request state enum
+type requestState int
+
+const (
+	requestStateInitialized requestState = iota
+	requestStateDone
+)
+
 const (
 	crlf       = "\r\n"
 	bufferSize = 8
 )
 
 func RequestFromReader(reader io.Reader) (*Request, error) {
-	//read bytes from reader
-	buff := make([]byte, bufferSize, bufferSize)
+	//create buffer to store stream of bytes
+	buff := make([]byte, bufferSize)
+	//index of already read bytes limit
 	readToIndex := 0
 
-	newRequest := Request{State: 1}
+	//new request with requestStateInitialized state
+	newRequest := Request{state: requestStateInitialized}
 
-	for newRequest.State != 0 {
-
-		if len(buff) <= readToIndex {
-			newBuff := make([]byte, len(buff), cap(buff)*2)
+	//loop to read from reader while request is not 'requestStateDone'
+	for newRequest.state != requestStateDone {
+		//increase size of buffer if read to index is larger than len of buffer
+		if readToIndex >= len(buff) {
+			newBuff := make([]byte, len(buff)*2)
 			copy(newBuff, buff)
 			buff = newBuff
 		}
 
-		read, err := reader.Read(buff[readToIndex:])
-		if err == io.EOF {
-			newRequest.State = 0
-			break
+		//read from reader from index until buffer is full
+		read, readErr := reader.Read(buff[readToIndex:])
+		if readErr != nil {
+			if !errors.Is(readErr, io.EOF) {
+				return nil, readErr
+			}
 		}
+
+		//move index of read bytes forward
 		readToIndex += read
 
-		parsed, err := newRequest.parse(buff)
+		//parse bytes into request until read to index
+		parsed, err := newRequest.parse(buff[:readToIndex])
 		if err != nil {
 			return nil, err
 		}
 
-		newBuff := make([]byte, len(buff), cap(buff))
-		copy(newBuff, buff)
-		buff = newBuff
-
+		//copy unparsed and get rid of already processed bytes
+		copy(buff, buff[parsed:])
 		readToIndex -= parsed
 
+		if readErr == io.EOF {
+			break
+		}
 	}
 
+	if newRequest.state != requestStateDone {
+		return nil, fmt.Errorf("incomplete request: reached EOF before parsing finished")
+	}
 	return &newRequest, nil
 }
 
@@ -75,7 +96,7 @@ func parseRequestLine(data []byte) (*RequestLine, int, error) {
 		return nil, 0, err
 	}
 
-	return requestLine, nil
+	return requestLine, idx + 2, nil
 }
 
 func requestLineFromString(str string) (*RequestLine, error) {
@@ -99,6 +120,9 @@ func requestLineFromString(str string) (*RequestLine, error) {
 		return nil, fmt.Errorf("malformed start-line: %s", str)
 	}
 
+	if httpVersionParts[0] != "HTTP" {
+		return nil, fmt.Errorf("unrecognized HTTP token: %s", httpVersionParts[0])
+	}
 	if httpVersionParts[1] != "1.1" {
 		return nil, fmt.Errorf("unrecognized HTTP-version: %s", httpVersionParts[1])
 	}
@@ -113,7 +137,21 @@ func requestLineFromString(str string) (*RequestLine, error) {
 }
 
 func (r *Request) parse(data []byte) (int, error) {
-	if r.State == 1 {
-		parseRequestLine(data)
+	switch r.state {
+	case requestStateInitialized:
+		requestLine, parsed, err := parseRequestLine(data)
+		if err != nil {
+			return 0, err
+		}
+		if parsed == 0 {
+			return 0, nil
+		}
+		r.RequestLine = *requestLine
+		r.state = requestStateDone
+		return parsed, nil
+	case requestStateDone:
+		return 0, fmt.Errorf("error: trying to read data in a requestStateDone state")
+	default:
+		return 0, fmt.Errorf("error: unknown state")
 	}
 }
