@@ -33,6 +33,7 @@ const (
 	bufferSize = 8
 )
 
+// Function that reads bytes from a io.Reader and parses then into a Request Line into a new Request
 func RequestFromReader(reader io.Reader) (*Request, error) {
 	//create buffer to store stream of bytes
 	buff := make([]byte, bufferSize)
@@ -51,7 +52,7 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 			buff = newBuff
 		}
 
-		//read from reader from index until buffer is full
+		//read from reader appending new bytes to the end of the buffer
 		read, readErr := reader.Read(buff[readToIndex:])
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) {
@@ -63,6 +64,7 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 		readToIndex += read
 
 		//parse bytes into request until read to index
+		//if succesful newRequest.state is updated to done
 		parsed, err := newRequest.parse(buff[:readToIndex])
 		if err != nil {
 			return nil, err
@@ -72,11 +74,13 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 		copy(buff, buff[parsed:])
 		readToIndex -= parsed
 
+		//if reached EOF, wether succesful or unsuccesful parsing we break from loop
 		if readErr == io.EOF {
 			break
 		}
 	}
 
+	//check if successful parse
 	if newRequest.state != requestStateDone {
 		return nil, fmt.Errorf("incomplete request: reached EOF before parsing finished")
 	}
@@ -84,21 +88,26 @@ func RequestFromReader(reader io.Reader) (*Request, error) {
 }
 
 func parseRequestLine(data []byte) (*RequestLine, int, error) {
+	//search for crlf in bytes
 	idx := bytes.Index(data, []byte(crlf))
 
+	//if not found return 0 bytes processed
 	if idx == -1 {
 		return nil, 0, nil
 	}
 
+	//if found we create request line from bytes
 	requestLineText := string(data[:idx])
 	requestLine, err := requestLineFromString(requestLineText)
 	if err != nil {
 		return nil, 0, err
 	}
 
+	//succesful request line with amount of bytes processed is returned
 	return requestLine, idx + 2, nil
 }
 
+// Function that creates a Request line from a string
 func requestLineFromString(str string) (*RequestLine, error) {
 	parts := strings.Split(str, " ")
 	if len(parts) != 3 {
@@ -136,6 +145,8 @@ func requestLineFromString(str string) (*RequestLine, error) {
 	return &requestLine, nil
 }
 
+// method that parses and returns a Request line from bytes
+// if successful request state is updated
 func (r *Request) parse(data []byte) (int, error) {
 	switch r.state {
 	case requestStateInitialized:
